@@ -1,0 +1,143 @@
+version: '3.8'
+
+services:
+  # Elasticsearch for log storage and search
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.14.0
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - ELASTIC_PASSWORD=changeme
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - log_network
+
+  # Logstash for log collection and processing
+  logstash:
+    image: docker.elastic.co/logstash/logstash:7.14.0
+    volumes:
+      - ./logstash/pipeline.conf:/usr/share/logstash/pipeline/logstash.conf
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - KAFKA_BROKERS=kafka:9092
+      - ES_USER=elastic
+      - ES_PASSWORD=changeme
+      - ENVIRONMENT=production
+    ports:
+      - "5044:5044"
+      - "5000:5000"
+      - "8080:8080"
+    depends_on:
+      - elasticsearch
+      - kafka
+    networks:
+      - log_network
+
+  # Kibana for visualization
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.14.0
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=elastic
+      - ELASTICSEARCH_PASSWORD=changeme
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - log_network
+
+  # Zookeeper for Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:6.2.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    networks:
+      - log_network
+
+  # Kafka for log streaming
+  kafka:
+    image: confluentinc/cp-kafka:6.2.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+    networks:
+      - log_network
+
+  # Apache Flink JobManager
+  flink-jobmanager:
+    image: flink:1.14.0-scala_2.12
+    command: jobmanager
+    ports:
+      - "8081:8081"
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+    networks:
+      - log_network
+
+  # Apache Flink TaskManager
+  flink-taskmanager:
+    image: flink:1.14.0-scala_2.12
+    depends_on:
+      - flink-jobmanager
+    command: taskmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+      - TASK_MANAGER_NUMBER_OF_TASK_SLOTS=2
+    networks:
+      - log_network
+
+  # Python ML service for anomaly detection
+  ml-service:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    volumes:
+      - ./ml:/app
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - ES_HOST=elasticsearch
+      - ES_USER=elastic
+      - ES_PASSWORD=changeme
+    depends_on:
+      - elasticsearch
+      - kafka
+    networks:
+      - log_network
+
+  # Next.js dashboard application
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - ES_HOST=elasticsearch:9200
+      - ES_USER=elastic
+      - ES_PASSWORD=changeme
+    depends_on:
+      - elasticsearch
+    networks:
+      - log_network
+
+networks:
+  log_network:
+    driver: bridge
+
+volumes:
+  es_data:
