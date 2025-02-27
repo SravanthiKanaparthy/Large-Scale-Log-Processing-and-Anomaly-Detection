@@ -1,0 +1,69 @@
+input {
+  # Collect logs from cloud servers via Filebeat
+  beats {
+    port => 5044
+    host => "0.0.0.0"
+  }
+  
+  # Direct TCP input for systems that can send logs directly
+  tcp {
+    port => 5000
+    codec => json
+  }
+  
+  # HTTP input for RESTful log submission
+  http {
+    port => 8080
+    codec => json
+  }
+}
+
+filter {
+  # Parse JSON logs
+  if [type] == "json" {
+    json {
+      source => "message"
+    }
+  }
+  
+  # Add timestamp if not present
+  if ![timestamp] {
+    date {
+      match => [ "timestamp", "ISO8601" ]
+      target => "@timestamp"
+    }
+  }
+  
+  # Enrich logs with metadata
+  mutate {
+    add_field => {
+      "environment" => "${ENVIRONMENT:production}"
+      "pipeline_processed" => true
+    }
+  }
+  
+  # Geolocate IP addresses if present
+  if [client_ip] {
+    geoip {
+      source => "client_ip"
+      target => "geo"
+    }
+  }
+}
+
+output {
+  # Send to Elasticsearch
+  elasticsearch {
+    hosts => ["${ES_HOST:elasticsearch:9200}"]
+    index => "logs-%{+YYYY.MM.dd}"
+    user => "${ES_USER:elastic}"
+    password => "${ES_PASSWORD:changeme}"
+  }
+  
+  # Send to Kafka for Flink processing
+  kafka {
+    bootstrap_servers => "${KAFKA_BROKERS:kafka:9092}"
+    topic_id => "logs-stream"
+    codec => json
+  }
+}
